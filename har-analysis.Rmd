@@ -1,0 +1,215 @@
+---
+title: "har-analysis.Rmd"
+author: "Shashishekhar S"
+date: "Wednesday, February 18, 2015"
+output: html_document
+---
+
+
+## Objective
+
+To predict the manner in which a group of six data enthusiasts exercised. The enthusiasts took measurements about themselves regularly to improve their health, to find patterns in their behavior. The goal is to use data from accelerometers on the belt, forearm, arm and dumbell of the participants.
+More information about the activity is available from their website: http://groupware.les.inf.puc-rio.br/har
+
+## Data
+
+The training data and the test data has been made available at the below URLs;
+
+ - https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+ - https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+However, these files have been stored locally for quicker access.
+
+
+## Goals
+
+ * Predict the manner in which the participants did the exercise. 
+ * A report on how the model was built
+ * A report on how cross validation was used
+ * Comments about the expected "out of sample error"
+ * Why were the choices made?
+ * Use the prediction model to predict 20 different test cases
+
+## Initialize Environment
+
+```{r initialize}
+# import libraries and set the seed to maintain consistency
+library(caret)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+
+set.seed(108)
+```
+
+## Loading Data
+
+```{r datafiles}
+trainUrl <- "data/pml-training.csv"
+testUrl <- "data/pml-testing.csv"
+```
+
+```{r read2mem}
+training <- read.csv(trainUrl, na.strings=c("NA","#DIV/0!",""))
+testing <- read.csv(testUrl, na.strings=c("NA","#DIV/0!",""))
+```
+
+## Data for training and cross-validation
+
+Partition the training data for "training" and "cross-validation" purposes 
+('classe' is the variable we are interested in)
+
+```{r partition}
+inTrain <- createDataPartition(y=training$classe, p=0.6, list=FALSE)
+datTraining <- training[inTrain, ]; datTesting <- training[-inTrain, ]
+dim(datTraining)
+dim(datTesting)
+```
+
+
+## Transform, remove and filter to clean up training data
+
+Clean "Near Zero Variance" variables
+
+```{r clean_1}
+
+dataNZV <- nearZeroVar(datTraining, saveMetrics=TRUE)
+```
+
+Create subset without the "Near Zero Variance" variables.
+
+```{r cleanuptraining}
+datNZVvars <- names(datTraining) %in% c("new_window", "kurtosis_roll_belt", "kurtosis_picth_belt",
+  "kurtosis_yaw_belt", "skewness_roll_belt", "skewness_roll_belt.1", "skewness_yaw_belt",
+  "max_yaw_belt", "min_yaw_belt", "amplitude_yaw_belt", "avg_roll_arm", "stddev_roll_arm",
+  "var_roll_arm", "avg_pitch_arm", "stddev_pitch_arm", "var_pitch_arm", "avg_yaw_arm",
+  "stddev_yaw_arm", "var_yaw_arm", "kurtosis_roll_arm", "kurtosis_picth_arm",
+  "kurtosis_yaw_arm", "skewness_roll_arm", "skewness_pitch_arm", "skewness_yaw_arm",
+  "max_roll_arm", "min_roll_arm", "min_pitch_arm", "amplitude_roll_arm", "amplitude_pitch_arm",
+  "kurtosis_roll_dumbbell", "kurtosis_picth_dumbbell", "kurtosis_yaw_dumbbell", "skewness_roll_dumbbell",
+  "skewness_pitch_dumbbell", "skewness_yaw_dumbbell", "max_yaw_dumbbell", "min_yaw_dumbbell",
+  "amplitude_yaw_dumbbell", "kurtosis_roll_forearm", "kurtosis_picth_forearm", "kurtosis_yaw_forearm",
+  "skewness_roll_forearm", "skewness_pitch_forearm", "skewness_yaw_forearm", "max_roll_forearm",
+  "max_yaw_forearm", "min_roll_forearm", "min_yaw_forearm", "amplitude_roll_forearm",
+  "amplitude_yaw_forearm", "avg_roll_forearm", "stddev_roll_forearm", "var_roll_forearm",
+  "avg_pitch_forearm", "stddev_pitch_forearm", "var_pitch_forearm", "avg_yaw_forearm",
+  "stddev_yaw_forearm", "var_yaw_forearm")
+datTraining <- datTraining[!datNZVvars]
+# Updated number of training data
+dim(datTraining)
+
+# Remove first column
+datTraining <- datTraining[c(-1)]
+
+# Clean redundant variables/values.  Cleaning Variables with too many NAs.
+
+training_iter <- datTraining 
+for(i in 1:length(datTraining)) { 
+        if( sum( is.na( datTraining[, i] ) ) /nrow(datTraining) >= .6 ) { 
+		for(j in 1:length(training_iter)) {
+			if( length( grep(names(datTraining[i]), names(training_iter)[j]) ) == 1)  { 
+				training_iter <- training_iter[ , -j] 
+			}	
+		} 
+	}
+}
+
+# Cleaned data set
+dim(training_iter)
+datTraining <- training_iter
+rm(training_iter)
+```
+
+Now, cleaning up the test data sets
+
+```{r cleanuptesting}
+clean1 <- colnames(datTraining)
+clean2 <- colnames(datTraining[, -58])
+datTesting <- datTesting[clean1]
+testing <- testing[clean2]
+
+# Check cleaned data
+dim(datTesting)
+dim(testing)
+```
+
+Now, to run through the RandomForest algorithm, the data in the "test" set must be of the same type.
+
+```{r typecast}
+for (i in 1:length(testing)) {
+   for (j in 1:length(datTraining)) {
+	   if(length(grep(names(datTraining[i]), names(testing)[j])) == 1)  {
+	       class(testing[j]) <- class(datTraining[i])
+     }      
+  }     
+}
+#And to make sure Coertion really worked, simple smart ass technique:
+testing <- rbind(datTraining[2, -58] , testing) #note row 2 does not mean anything, this will be removed right.. now:
+testing <- testing[-1,]
+```
+
+## Explore Decision Tree
+
+```{r explore_tree}
+exploreTree <- rpart(classe ~ ., data=datTraining, method="class")
+fancyRpartPlot(exploreTree)
+```
+
+Use decision tree to predict
+
+```{r prediction_dt}
+predict_dt <- predict(exploreTree, datTesting, type = "class")
+```
+
+Test Decision Tree results using Confusion Matrix
+
+```{r test_results_dt}
+confusionMatrix(predict_dt, datTesting$classe)
+```
+
+## Explore using Random Forest
+
+```{r random_forest}
+exploreForest <- randomForest(classe ~. , data=datTraining)
+layout(matrix(c(1,2),nrow=1),
+       width=c(4,1)) 
+par(mar=c(5,4,4,0)) #No margin on the right side
+plot(exploreForest, log='y')
+par(mar=c(5,0,4,2)) #No margin on the left side
+plot(c(0,1),type="n", axes=F, xlab="", ylab="")
+#legend("top", colnames(model$err.rate),col=1:4,cex=0.8,fill=1:4)
+```
+
+Use random forest to predict
+```{r prediction_rf}
+predict_rf <- predict(exploreForest, datTesting, type = "class")
+```
+
+Test Random Forest results using Confusion Matrix
+```{r test_results_rf}
+confusionMatrix(predict_rf, datTesting$classe)
+```
+
+Using Random Forest, the results are improved
+
+## Files for answers submission
+
+```{r predict_test_rf}
+predict_rf_test <- predict(exploreForest, testing, type = "class")
+```
+
+Generate text files as needed for submission
+```{r generate_files}
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("prediction/problem_id_", i, ".txt")
+    write.table(x[i], file=filename, quote=FALSE, row.names=FALSE, col.names=FALSE)
+  }
+}
+
+pml_write_files(predict_rf_test)
+```
